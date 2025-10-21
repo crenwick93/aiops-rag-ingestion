@@ -1,0 +1,21 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: confluence-to-vector-nightly
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: sync
+            image: your-registry/your-namespace/confluence-sync:latest
+            imagePullPolicy: Always
+            envFrom:
+            - configMapRef:
+                name: confluence-rag-sync-config
+            - secretRef:
+                name: confluence-creds
+

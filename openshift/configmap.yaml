@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: confluence-rag-sync-config
+data:
+  # Vector API base URL (server that exposes /openapi.json and vector endpoints)
+  VECTOR_API_BASE_URL: "http://vector-api"
+
+  # Confluence Cloud ID and credentials (Basic auth via ex route)
+  # Obtain your cloud id from admin pages, e.g.: 84927973-adf1-4112-be18-59ea4f9c3d60
+  CONF_CLOUD_ID: ""
+
+  # Vector DB and embedding model
+  COLLECTION_ID: "confluence"
+  EMBEDDING_MODEL_ID: "all-MiniLM-L6-v2"
+
+  # Ingestion window (hours). For initial load use 720 (30d)
+  SINCE_HOURS: "720"
+
+  # Chunking and batching (tuned for fewer requests, faster ingest)
+  CHUNK_TOKENS: "1200"
+  CHUNK_OVERLAP: "120"
+  MAX_CHUNKS_PER_INSERT: "512"
+  VERBOSE: "1"
+
+  # Filters (set as needed)
+  # Confluence "folders" are actually page hierarchies; filter by parent (ancestor) page id.
+  # Obtain the id by:
+  #  - Running ./get_known_issues_id.sh (locates by title and prints the id), or
+  #  - In Confluence UI: three dots → Copy link, then read the numeric id after /folder/<id> in the URL.
+  # Use FILTER_FOLDER_ID to scope to that parent and its children.
+  FILTER_FOLDER_ID: ""
+
+  # To ingest an entire space, set FILTER_SPACE_KEYS to the space key (e.g., KNOWN).
+  # Use check_api_access_to_space.sh to validate visibility and find the key by name.
+  FILTER_LABELS: ""
+  FILTER_SPACE_KEYS: ""
+  FILTER_PAGE_IDS: ""
+
