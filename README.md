@@ -55,7 +55,7 @@ Best practices implemented:
   - `/v1/vector_io/documents` and `/v1/vector_io/collections` ("underscore" variant).
 - Network access from the CronJob pod to the Vector API service.
 - Confluence Cloud credentials (email + API token).
-- Optional but recommended if you host the Vector API in-cluster and it uses file-backed storage: a PersistentVolumeClaim (PVC). See `openshift/pvc.yaml` for an example. Bind/mount this PVC in your Vector API deployment, not in this sync job.
+- Optional but recommended if you host the Vector API in-cluster and it uses file-backed storage: a PersistentVolumeClaim (PVC). Define and mount the PVC in your Vector API deployment (in that repo), not in this sync job. This repo does not ship a PVC manifest.
 
 ### Quick credential/connectivity checks (before deploying)
 - Confluence credentials and space access (requires valid CONF_*):
