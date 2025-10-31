@@ -6,9 +6,12 @@ ENV PIP_NO_CACHE_DIR=1 \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt \
+    && pip install "llama-stack-client==0.2.23"
 
-COPY sync.py .
+COPY ingest_conf.py .
 
-ENTRYPOINT ["python", "/app/sync.py"]
+# PoC entrypoint: ingest Confluence into Llama Stack
+ENTRYPOINT ["python", "/app/ingest_conf.py"]
 

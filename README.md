@@ -38,7 +38,8 @@ podman push quay.io/<your-namespace>/confluence-sync:latest
   python3 -m venv .venv
   source .venv/bin/activate
   pip install -r requirements.txt
-  python sync.py
+  pip install "llama-stack-client==0.2.23"
+  python ingest_conf.py
   ```
 
 This repo provides a tiny service to ingest Confluence pages into a vector database via a generic Vector API (auto-discovers two common variants). It includes simple OpenShift assets for running as a CronJob. No dependency on a specific "llama" stack is required.
@@ -65,18 +66,35 @@ Best practices implemented:
   export CONF_API_TOKEN=your-confluence-api-token
   # Check you can access the target space by name (defaults to SPACE_NAME="Known Issues")
   export SPACE_NAME="Known Issues"
-  bash ./check_api_access_to_space.sh
-  # Optional: locate a parent page id ("folder") by title if you prefer folder scoping
-  # bash ./get_folder_id.sh "Known Issues"
+  # Optional: locate a parent page id ("folder") by using Confluence UI → Copy link
   ```
 
-- Vector API connectivity (requires VECTOR_API_BASE_URL):
-  ```bash
-  export VECTOR_API_BASE_URL=http://vector-api:8001
-  # Calls the Vector API OpenAPI, registers a test collection, inserts a couple chunks, then queries
-  bash ./test_sync.sh
-  ```
-  Note: The script discovers the API variant automatically and may create a temporary test collection.
+### Quick Confluence connectivity test (Python)
+Use the helper script to verify credentials and list pages from a space before running ingestion:
+```bash
+export CONF_CLOUD_ID=...
+export CONF_USER=...
+export CONF_API_TOKEN=...
+export SPACE_NAME="Known Issues"
+# optional
+export TEST_LIMIT=10
+
+python test_confluence.py
+```
+
+### Notebook option: `ingest_conf.ipynb`
+Prefer an interactive check? Open the notebook to run the same ingestion steps cell-by-cell:
+```bash
+pip install -r requirements.txt && pip install llama-stack-client jupyter
+export LLAMA_BASE_URL=...
+export CONF_CLOUD_ID=...
+export CONF_USER=...
+export CONF_API_TOKEN=...
+export SPACE_NAME="Known Issues"
+
+jupyter notebook ingest_conf.ipynb
+```
+The notebook mirrors `ingest_conf.py` and is useful for quick experimentation before containerizing or scheduling.
 
 ## Files
 - `Containerfile`: Python 3.12 slim image
@@ -84,6 +102,166 @@ Best practices implemented:
 - `sync.py`: fetches pages updated in the last N hours, converts to Markdown, chunks, and upserts to the Vector API (auto-discovers endpoints)
 - `openshift/secret.yaml`: Confluence credentials (edit values before applying)
 - `openshift/cronjob.yaml`: Nightly sync job (edit image, URLs, env as needed)
+
+## PoC demo (Llama Stack) — use `ingest_conf.py`
+For the Proof of Concept demo, use `ingest_conf.py`. It ingests Confluence pages directly into Llama Stack via the `rag-tool` insert route and mirrors the working notebook’s ingestion flow.
+
+Quick start:
+```bash
+pip install -r requirements.txt && pip install llama-stack-client
+export LLAMA_BASE_URL=http://<llama-stack-host>:8321
+export CONF_CLOUD_ID=...
+export CONF_USER=...
+export CONF_API_TOKEN=...
+export SPACE_NAME="Known Issues"
+# optional
+export VECTOR_DB_ID="conf-known-issues"
+export LABELS=""
+export SINCE_HOURS=24
+python ingest_conf.py
+```
+
+If you see HTTP 426 (client/server version mismatch):
+- Your server reports 0.2.x; pin the client locally to a compatible 0.2.x:
+  ```bash
+  pip install "llama-stack-client==0.2.23"
+  ```
+- The Containerfile pins `llama-stack-client==0.2.23`. Rebuild/push and redeploy the image.
+
+Notes for nightly runs (demo):
+- Persist the working directory so `conf_known_issues.vdb` is retained; this lets the script reuse the same vector DB identifier each night.
+- Batching and HTTP retries are enabled for robustness. Adjust `BATCH_SIZE` if needed.
+
+Important PoC caveats (not production-hardened):
+- Duplicates on re-ingest: On your current Llama Stack build, `rag-tool/insert` behaves as append (not upsert). Re-inserting a page with the same `document_id` can create duplicates over time.
+- Deletions not handled: If a Confluence page is deleted, its vectors remain in the DB; this PoC does not prune them.
+
+Production guidance:
+- Prefer an upsert or delete capability (when available) or implement a rotation strategy (new vector DB per run and point inference to the latest).
+- Track and reconcile deletions (e.g., compare known `document_id`s and remove those missing upstream).
+- Use `SINCE_HOURS` for incremental ingestion and persist vector DB state reliably.
+
+### Minimal environment (.env) for `ingest_conf.py`
+Required:
+- `LLAMA_BASE_URL`
+- `CONF_CLOUD_ID`
+- `CONF_USER`
+- `CONF_API_TOKEN`
+- `SPACE_NAME`
+
+Optional:
+- `VECTOR_DB_ID` (default: `conf-known-issues`)
+- `LABELS` (comma-separated)
+- `SINCE_HOURS` (default: `0`; for nightly set `24`)
+- `BATCH_SIZE` (default: `100`)
+
+
+
+### Containerize and run on OpenShift (Job/CronJob)
+Build and push a demo image (note: entrypoint runs `ingest_conf.py`):
+```bash
+podman build -t your-registry/your-namespace/aiops-conf-ingestion:latest .
+podman push your-registry/your-namespace/aiops-conf-ingestion:latest
+```
+
+Create/OpenShift resources (envsubst-driven templates):
+```bash
+# Prepare environment for templating
+export NAMESPACE=<your-namespace>
+export IMAGE=your-registry/your-namespace/aiops-conf-ingestion:latest
+export CRON_SCHEDULE="0 2 * * *"
+
+# Llama + Confluence settings (can be sourced from .env)
+export LLAMA_BASE_URL=${LLAMA_BASE_URL}
+export CONF_CLOUD_ID=${CONF_CLOUD_ID}
+export SPACE_NAME=${SPACE_NAME:-"Known Issues"}
+export VECTOR_DB_ID=${VECTOR_DB_ID:-"conf-known-issues"}
+export LABELS=${LABELS:-""}
+export SINCE_HOURS=${SINCE_HOURS:-"24"}
+export BATCH_SIZE=${BATCH_SIZE:-"100"}
+export CONF_USER=${CONF_USER}
+export CONF_API_TOKEN=${CONF_API_TOKEN}
+
+# Apply templated resources
+envsubst < openshift/secret.yaml | oc apply -f -
+envsubst < openshift/configmap-llama.yaml | oc apply -f -
+envsubst < openshift/job-llama.yaml | oc apply -f -
+# Or schedule nightly CronJob
+envsubst < openshift/cronjob-llama.yaml | oc apply -f -
+```
+
+Replace the image reference `your-registry/your-namespace/aiops-conf-ingestion:latest` in the YAMLs with your registry path. By default, these manifests run ephemerally (no PVC). For PoC/demo this is fine; each run will recreate or reuse the vector DB per server behavior. If you want persistence of the `.vdb` file across pods, add a PVC and mount it to `/app` in the Job/CronJob.
+
+Environment keys used by the container:
+- From `openshift/configmap-llama.yaml`: `LLAMA_BASE_URL`, `CONF_CLOUD_ID`, `SPACE_NAME`, `VECTOR_DB_ID`, `LABELS`, `SINCE_HOURS`, `BATCH_SIZE`
+- From `openshift/secret.yaml`: `CONF_USER`, `CONF_API_TOKEN`
+
+### OpenShift Template (recommended one-command apply)
+Render and apply the template with your current shell env (no file splitting):
+```bash
+oc process -f openshift/template.ocp \
+  -p IMAGE=your-registry/your-namespace/aiops-conf-ingestion:latest \
+  -p CRON_SCHEDULE="0 2 * * *" \
+  -p LLAMA_BASE_URL="$LLAMA_BASE_URL" \
+  -p CONF_CLOUD_ID="$CONF_CLOUD_ID" \
+  -p SPACE_NAME="${SPACE_NAME:-Known Issues}" \
+  -p VECTOR_DB_ID="${VECTOR_DB_ID:-conf-known-issues}" \
+  -p LABELS="${LABELS:-}" \
+  -p BATCH_SIZE="${BATCH_SIZE:-100}" \
+  -p CONF_USER="$CONF_USER" \
+  -p CONF_API_TOKEN="$CONF_API_TOKEN" \
+| oc apply -f -
+```
+This creates/updates the ConfigMap, Secret, one-off Job and nightly CronJob in a single command.
+The one-off Job starts ingestion immediately after apply; the CronJob will schedule future nightly runs.
+
+### Demo reset strategy — recreate the vector DB each run
+For PoC simplicity (and to avoid duplicate documents on append-only servers), run with a clean vector DB each time:
+- Before each run, delete any existing vector DB(s) for your logical name (e.g., `VECTOR_DB_ID=confluence`).
+- Then start the job; the script will create a fresh DB and ingest the current pages.
+
+How to delete (choose one):
+- Using the CLI:
+  ```bash
+  llama-stack-client vector_dbs list
+  # Note the identifier (e.g., vs_abc123...) for your target DB name (vector_db_name: confluence)
+  llama-stack-client vector_dbs delete vs_abc123...
+  ```
+- Using the API (if DELETE is supported by your server):
+  ```bash
+  BASE="$LLAMA_BASE_URL" 
+  ID="vs_abc123..."   # identifier from vector_dbs list
+  curl -s -X DELETE "$BASE/v1/vector-dbs/$ID"
+  ```
+
+Why this approach?
+- It guarantees a deterministic demo state and avoids accumulating duplicates when inserts are not upsert.
+- In production, prefer an incremental pipeline: fetch only changes, upsert (or delete then insert), and reconcile deletions.
+
+Use your local .env to drive the OpenShift ConfigMap/Secret
+If you prefer to source values directly from your `.env` instead of editing YAMLs, create resources from the files and keep the same names the templates expect (`working-sync-config`, `confluence-creds`):
+```bash
+# Create/replace ConfigMap from .env (non-secret values)
+oc create configmap working-sync-config \
+  --from-env-file=.env \
+  -o yaml --dry-run=client | oc apply -f -
+
+# Create/replace Secret from a separate secrets file (.env.secrets) or literals
+# Option A: from a file with CONF_USER and CONF_API_TOKEN lines
+oc create secret generic confluence-creds \
+  --from-env-file=.env.secrets \
+  -o yaml --dry-run=client | oc apply -f -
+# Option B: from explicit literals
+oc create secret generic confluence-creds \
+  --from-literal=CONF_USER="$CONF_USER" \
+  --from-literal=CONF_API_TOKEN="$CONF_API_TOKEN" \
+  -o yaml --dry-run=client | oc apply -f -
+
+# Then apply the Job/CronJob (they already envFrom this ConfigMap and Secret)
+oc apply -f openshift/job-llama.yaml
+# or
+oc apply -f openshift/cronjob-llama.yaml
+```
 
 ## Build and push with podman
 From this directory:
@@ -153,12 +331,12 @@ Set via `env`/`envFrom` in the CronJob:
   - `CHUNK_TOKENS` (default: 1000)
   - `CHUNK_OVERLAP` (default: 180)
   - `FILTER_SPACE_KEYS` (recommended to ingest an entire space): set to the space key (e.g., `KNOWN`). Use `check_api_access_to_space.sh` to validate visibility and find the key.
-  - `FILTER_FOLDER_ID` (alternative scoping): parent page id (often called "folder") to ingest its descendants. Obtain via `get_folder_id.sh` or Confluence UI "Copy link".
+  - `FILTER_FOLDER_ID` (alternative scoping): parent page id (often called "folder") to ingest its descendants. Obtain via Confluence UI "Copy link".
 
 ### Ingest an entire space
-1) Run `check_api_access_to_space.sh` with `SPACE_NAME` to confirm access and get the space key.
-2) Set `FILTER_SPACE_KEYS=<SPACE_KEY>` in your env/ConfigMap.
-3) For initial full ingestion, set `SINCE_HOURS=""` (empty) or a large window (e.g., `720`).
+1) Set `SPACE_NAME` to your target space; the tools resolve the space key automatically. Optionally run `test_confluence.py` to verify access and list a few pages.
+2) (Optional, legacy flow) If using filters with other scripts, set `FILTER_SPACE_KEYS=<SPACE_KEY>`.
+3) For initial full ingestion, use the default all-time behavior (or set a large lookback window in legacy flows).
 
 ### Cloud ID and service account note
 - Some organizations require using the Atlassian API gateway (`api.atlassian.com`) with a `cloudId` instead of the site URL.
