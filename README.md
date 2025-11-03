@@ -96,6 +96,14 @@ jupyter notebook ingest_conf.ipynb
 ```
 The notebook mirrors `ingest_conf.py` and is useful for quick experimentation before containerizing or scheduling.
 
+Note for notebook users
+- Create a `.env` file in the project root containing at least `CONF_CLOUD_ID`, `CONF_USER`, and `CONF_API_TOKEN` (and optionally `SPACE_NAME`).
+- In the first cell, load it with python-dotenv before running the rest:
+  ```python
+  %pip install -q python-dotenv
+  from dotenv import load_dotenv; load_dotenv('.env')
+  ```
+
 ## Files
 - `Containerfile`: Python 3.12 slim image
 - `requirements.txt`: requests, beautifulsoup4, markdownify
